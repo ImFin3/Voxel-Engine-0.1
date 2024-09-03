@@ -1,0 +1,214 @@
+#version 450
+
+layout(binding = 0) uniform UniformBufferObject {
+    mat4 model;
+    mat4 view;
+    mat4 proj;
+
+    vec3 camPosition;
+    vec3 camForward;
+    vec3 camUp;
+    vec3 camRight;
+} ubo;
+
+struct Voxel {
+	vec3 m_position;
+	vec3 m_color;
+	float m_size;
+};
+
+layout(std140, binding = 1) buffer VoxelSSBO {
+   Voxel voxels[ ];
+};
+
+layout (binding = 2, rgba8) uniform writeonly image2D resultImage;
+
+layout (local_size_x = 8, local_size_y = 4, local_size_z = 1) in;
+
+struct Camera {
+    vec3 position;
+    vec3 forward;
+    vec3 up;
+    vec3 right;
+};
+
+struct Ray {
+    vec3 origin;
+    vec3 direction;
+};
+
+struct Square {
+    vec3 originA;
+    vec3 directionAB;
+    vec3 directionAC;
+    vec4 color;
+};
+
+const float MAX_VIEWING_DISTANCE = 1000000.0f;
+
+const vec4 VOID_COLOR = vec4(0.0f, 0.0f, 0.0f, 0.0f);
+
+float hitSquare(Ray ray, Square square, float closestHitDistance);
+
+
+void main() 
+{
+    //Get Pixel Coord
+    ivec2 coord = ivec2(gl_GlobalInvocationID.x, gl_GlobalInvocationID.y);
+
+    //Get -1 to 1 aspect ratio
+    ivec2 screenSize = imageSize(resultImage);
+    float horizontalCoefficient = ((float(coord.x) * 2 - screenSize.x) / screenSize.x);
+    float verticalCoefficient = -((float(coord.y) * 2 - screenSize.y) / screenSize.x);
+
+    //Create Camera for clarity
+    //Camera camera;
+    //camera.position = vec3(0.0f, 0.0f, 0.0f); 
+    //camera.forward = vec3(1.0f, 0.0f, 0.0f);
+    //camera.up = vec3(0.0f, 0.0f, 1.0f);
+    //camera.right = vec3(0.0f, 1.0f, 0.0f);
+
+    Camera camera;
+    camera.position = ubo.camPosition;  
+    camera.forward = ubo.camForward;
+    camera.up = ubo.camUp;
+    camera.right = ubo.camRight;
+    
+
+    Ray ray;
+    ray.origin = camera.position;
+    ray.direction = normalize(camera.forward + horizontalCoefficient * camera.right + verticalCoefficient * camera.up);
+
+    Square square1;
+    square1.originA = vec3(9.0f, -1.0f, -1.0f);
+    square1.directionAB = vec3(0.0f, 2.0f, 0.0f);
+    square1.directionAC = vec3(0.0f, 0.0f, 2.0f);
+    square1.color = vec4(1.0f, 0.0f, 0.0f, 0.0f); 
+
+    Square square2;
+    square2.originA = vec3(10.0f, -1.0f, -1.0f);
+    square2.directionAB = vec3(0.0f, 4.0f, 0.0f);
+    square2.directionAC = vec3(0.0f, 0.0f, 4.0f);
+    square2.color = vec4(0.0f, 1.0f, 0.0f, 0.0f);
+    
+    Square square3;
+    square3.originA = vec3(11.0f, -1.0f, -1.0f);
+    square3.directionAB = vec3(0.0f, 6.0f, 0.0f);
+    square3.directionAC = vec3(0.0f, 0.0f, 6.0f);
+    square3.color = vec4(0.0f, 0.0f, 1.0f, 0.0f);
+     
+    Square squares[] = {square1, square2, square3};
+
+    
+    
+    float closestHitDistance = MAX_VIEWING_DISTANCE;
+    float newHitDistance;
+
+
+    imageStore(resultImage, coord, VOID_COLOR);
+    for (int i = 0; i < squares.length(); i++)
+    {
+        newHitDistance = hitSquare(ray, squares[i], closestHitDistance);
+        
+        if(newHitDistance < closestHitDistance)
+        {
+            imageStore(resultImage, coord, squares[i].color);
+            closestHitDistance = newHitDistance;
+        }
+    }
+    
+    
+}
+
+float hitSquare(Ray ray, Square square, float closestHitDistance)
+{
+    //Calculate the distance from Origin to Intersection with Plane
+    
+    vec3 N = cross(square.directionAB, square.directionAC);     // N => Normal
+
+    float a = N.x * square.originA.x + N.y * square.originA.y + N.z * square.originA.z;     // a => Solution of cartesian form (Koordinatenform)
+
+    float t;    // t => Multiplier of ray direction Vector | if direction Vector is normalized => t = Distance from ray origin to Intersection
+
+    float multiplierOfT = N.x * ray.direction.x + N.y * ray.direction.y + N.z * ray.direction.z;
+
+    if(multiplierOfT == 0.0f)   // there is no value for "t" so the ray does not hit the plane
+    {
+        return closestHitDistance + 1;
+    }
+
+    float flatValue = N.x * ray.origin.x + N.y * ray.origin.y + N.z * ray.origin.z;
+
+
+    t = (a - flatValue) / multiplierOfT;    //RESULT
+
+    if(t <= 0.0f)   // with t < 0 the object we tried to hit is behind the camera
+    {
+        return closestHitDistance + 1;
+    }
+
+
+    //Calculate The Intersection Point
+
+    vec3 intersection = ray.origin + ray.direction * t;     //RESULT
+
+    //Test if Intersection lies in Square
+
+    vec3 v1 = vec3(square.directionAB.x, square.directionAC.x, intersection.x - square.originA.x);
+
+    vec3 v2 = vec3(square.directionAB.y, square.directionAC.y, intersection.y - square.originA.y);
+
+    vec3 v3 = vec3(square.directionAB.z, square.directionAC.z, intersection.z - square.originA.z);
+
+    float m;
+    float n;
+
+    if(v1.x == 0.0f && v1.y == 0.0f)        //v1 has no information
+    {
+        if(v2.x == 0.0f)                    //v2s m multiplier is 0 => v3s m multiplier is != 0
+        {
+            m = v3.z / v3.x;
+            n = v2.z / v2.y;
+        }
+        else                                //v2s n multiplier is 0 => v3s n mulitplier != 0
+        {
+            m = v2.z / v2.x;
+            n = v3.z / v3.y;
+        }
+    }
+    else if(v2.x == 0.0f && v2.y == 0.0f)   //v2 has no information  
+    {
+        if(v3.x == 0.0f)                
+        {
+            m = v1.z / v1.x;
+            n = v3.z / v3.y;
+        }
+        else                            
+        {
+            m = v3.z / v3.x;
+            n = v1.z / v1.y;
+        }
+    }
+    else                                    //v3 has no information
+    {
+        if(v1.x == 0.0f)                
+        {
+            m = v2.z / v2.x;
+            n = v1.z / v1.y;
+        }
+        else                            
+        {
+            m = v1.z / v1.x;
+            n = v2.z / v2.y;
+        }
+    }
+
+    if(m < 0 || m > 1 || n < 0 || n > 1)    //if either m or n is smaller than 0 or bigger than 1 => intersection lies not in the square
+    {
+        return closestHitDistance + 1;
+    }
+
+
+    return t;
+}
+
